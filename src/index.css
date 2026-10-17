@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --blush-bg: #FDF7F8;
+    --blush-soft: #FCEEF1;
+    --rose-primary: #E27B8A;
+    --rose-deep: #C45566;
+    --rose-dark: #8C3042;
+    --sage-green: #7C9872;
+    --warm-gold: #C99A6E;
+    --charcoal: #1F2421;
+    --paper-white: #FFFFFF;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background: radial-gradient(ellipse at 50% 25%, #FFF7F8 0%, #FAEEF1 50%, #F5DFE4 100%);
+    color: #2D2628;
+    font-family: 'Cormorant Garamond', serif;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  body::-webkit-scrollbar,
+  *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
+
+/* Petal falling animation */
+.petal {
+  position: fixed;
+  pointer-events: none;
+  z-index: 15;
+  animation: petalFall linear infinite;
+}
+
+@keyframes petalFall {
+  0% {
+    transform: translateY(-40px) rotate(0deg) translateX(0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translateY(50vh) rotate(180deg) translateX(35px);
+    opacity: 0.7;
+  }
+  100% {
+    transform: translateY(110vh) rotate(360deg) translateX(-25px);
+    opacity: 0;
+  }
+}
+
+/* 3D Flip Book Styles */
+.book-perspective {
+  perspective: 2600px;
+  perspective-origin: 50% 50%;
+  transform-style: preserve-3d;
+}
+
+.book-leaf {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 50%;
+  height: 100%;
+  transform-origin: left center;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.book-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  overflow: hidden;
+}
+
+.book-face-front {
+  transform: rotateY(0deg);
+}
+
+.book-face-back {
+  transform: rotateY(180deg);
+}
+
+/* Ambient Floating Levitation for Closed Book */
+@keyframes bookFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-book-float {
+  animation: bookFloat 4.2s ease-in-out infinite;
+}

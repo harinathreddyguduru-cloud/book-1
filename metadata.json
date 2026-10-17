@@ -1,0 +1,6 @@
+{
+  "name": "Wedding Anniversary 3D Book",
+  "description": "A realistic, interactive 3D digital Wedding Anniversary keepsake book with authentic hardcover physics, page-turn animations, and customizable memories.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
