@@ -226,6 +226,34 @@ export default function App() {
   const globalFileInputRef = useRef<HTMLInputElement | null>(null);
   const coverPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Free 360° 3D Book Rotation State & Refs
+  const [rotOffset, setRotOffset] = useState({ x: 0, y: 0 });
+  const [isActiveDragging, setIsActiveDragging] = useState(false);
+  const [isReturning, setIsReturning] = useState(false);
+  const currentRotRef = useRef({ x: 0, y: 0 });
+  const isReturningRef = useRef(false);
+  const returnAnimRef = useRef<number | null>(null);
+  const hasDraggedRef = useRef(false);
+  const dragStateRef = useRef<{
+    isTracking: boolean;
+    isDragging: boolean;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startRotX: number;
+    startRotY: number;
+    targetEl: HTMLElement | null;
+  }>({
+    isTracking: false,
+    isDragging: false,
+    pointerId: -1,
+    startX: 0,
+    startY: 0,
+    startRotX: 0,
+    startRotY: 0,
+    targetEl: null,
+  });
+
   // Cover photo & text state (preserving PDF visual identity)
   const [coverImage, setCoverImage] = useState<string | null>(() => {
     try {
@@ -293,7 +321,7 @@ export default function App() {
   const totalLeaves = Math.ceil(totalPages / 2) + 1;
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isClosed || !bookContainerRef.current) return;
+    if (!isClosed || !bookContainerRef.current || isActiveDragging || isReturning) return;
     const rect = bookContainerRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width - 0.5;
     const y = (e.clientY - rect.top) / rect.height - 0.5;
@@ -302,7 +330,7 @@ export default function App() {
   };
 
   const handleMouseEnter = () => {
-    if (isClosed) setIsBookHovered(true);
+    if (isClosed && !isActiveDragging && !isReturning) setIsBookHovered(true);
   };
 
   const handleMouseLeave = () => {
@@ -310,8 +338,87 @@ export default function App() {
     setMouseTilt({ x: 0, y: 0 });
   };
 
+  // Immediate reset helper for cover flips & book open/close transitions
+  const resetRotationImmediately = useCallback(() => {
+    if (returnAnimRef.current !== null) {
+      cancelAnimationFrame(returnAnimRef.current);
+      returnAnimRef.current = null;
+    }
+    isReturningRef.current = false;
+    setIsReturning(false);
+    setIsActiveDragging(false);
+    dragStateRef.current.isTracking = false;
+    dragStateRef.current.isDragging = false;
+    currentRotRef.current = { x: 0, y: 0 };
+    setRotOffset({ x: 0, y: 0 });
+  }, []);
+
+  // Automatic return animation with delta time & smooth physical easing curve
+  const startReturnAnimation = useCallback(() => {
+    if (returnAnimRef.current !== null) {
+      cancelAnimationFrame(returnAnimRef.current);
+    }
+
+    const currentX = currentRotRef.current.x;
+    const currentY = currentRotRef.current.y;
+
+    // Shortest path modulo normalization to prevent multi-revolution spinning
+    const normalizedY = ((currentY % 360) + 540) % 360 - 180;
+    const startX = currentX;
+    const startY = normalizedY;
+
+    // Synchronize current reference immediately (identical visual transform)
+    currentRotRef.current = { x: startX, y: startY };
+    setRotOffset({ x: startX, y: startY });
+
+    const totalDist = Math.hypot(startX, startY);
+    if (totalDist < 0.1) {
+      setRotOffset({ x: 0, y: 0 });
+      currentRotRef.current = { x: 0, y: 0 };
+      isReturningRef.current = false;
+      setIsReturning(false);
+      return;
+    }
+
+    // Dynamic duration based on angular distance: smooth, physical, elegant (450ms to 800ms)
+    const duration = Math.min(800, Math.max(450, 450 + (totalDist / 180) * 350));
+    const startTime = performance.now();
+
+    isReturningRef.current = true;
+    setIsReturning(true);
+
+    const step = (now: number) => {
+      if (!isReturningRef.current) return;
+
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      // Natural ease-out cubic curve
+      const ease = 1 - Math.pow(1 - progress, 3);
+
+      const nextX = startX * (1 - ease);
+      const nextY = startY * (1 - ease);
+
+      currentRotRef.current = { x: nextX, y: nextY };
+      setRotOffset({ x: nextX, y: nextY });
+
+      if (progress < 1) {
+        returnAnimRef.current = requestAnimationFrame(step);
+      } else {
+        setRotOffset({ x: 0, y: 0 });
+        currentRotRef.current = { x: 0, y: 0 };
+        returnAnimRef.current = null;
+        isReturningRef.current = false;
+        setIsReturning(false);
+      }
+    };
+
+    returnAnimRef.current = requestAnimationFrame(step);
+  }, []);
+
   const openBook = useCallback(() => {
     if (turningLeafIndex !== null || !isClosed || isClosing || isOpening || isFlippingCover) return;
+    resetRotationImmediately();
     setIsBookHovered(false);
     setIsOpening(true);
     soundFx.playBookOpenSound();
@@ -333,10 +440,11 @@ export default function App() {
       setTurningLeafIndex(null);
       setIsOpening(false);
     }, 950);
-  }, [turningLeafIndex, isClosed, isClosing, isOpening, isFlippingCover, closedBy]);
+  }, [turningLeafIndex, isClosed, isClosing, isOpening, isFlippingCover, closedBy, resetRotationImmediately]);
 
   const closeBook = useCallback(() => {
     if (turningLeafIndex !== null || isClosed || isClosing || isOpening || isFlippingCover) return;
+    resetRotationImmediately();
     setActiveTool('select');
     setIsClosing(true);
     setClosedBy('front');
@@ -357,11 +465,12 @@ export default function App() {
       setIsClosed(true);
       setIsClosing(false);
     }, 900);
-  }, [turningLeafIndex, isClosed, isClosing, isOpening, isFlippingCover, flippedLeaves]);
+  }, [turningLeafIndex, isClosed, isClosing, isOpening, isFlippingCover, flippedLeaves, resetRotationImmediately]);
 
   // Flip Book Button handler: Toggle between Front and Back Cover
   const handleFlipBookCover = useCallback(() => {
-    if (turningLeafIndex !== null || isClosing || isOpening || isFlippingCover) return;
+    if (turningLeafIndex !== null || isClosing || isOpening || isFlippingCover || isActiveDragging) return;
+    resetRotationImmediately();
 
     if (!isClosed) {
       setIsFlippingCover(true);
@@ -381,7 +490,7 @@ export default function App() {
         setIsFlippingCover(false);
       }, 850);
     }
-  }, [isClosed, isClosing, isOpening, isFlippingCover, turningLeafIndex, closeBook]);
+  }, [isClosed, isClosing, isOpening, isFlippingCover, isActiveDragging, turningLeafIndex, closeBook, resetRotationImmediately]);
 
   const flipForward = useCallback(() => {
     if (turningLeafIndex !== null || isClosed || isClosing || isOpening || flippedLeaves >= totalLeaves) return;
@@ -419,8 +528,136 @@ export default function App() {
     setFlippedLeaves(targetFlipped);
   };
 
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      // Primary button / touch only
+      if (e.button !== 0) return;
+      if (isOpening || isClosing || isFlippingCover || turningLeafIndex !== null) return;
+
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      // Never intercept header, footer, or toolbar controls
+      if (
+        target.closest('header') ||
+        target.closest('footer') ||
+        target.closest('[data-controls-toolbar]') ||
+        target.closest('button, input, textarea, a, select')
+      ) {
+        return;
+      }
+
+      // When open: only allow rotating by dragging outside the page area (background)
+      if (!isClosed) {
+        if (target.closest('[data-book-spread]')) {
+          return;
+        }
+      }
+
+      // When closed: allow rotating on book or background, but preserve inputs on cover
+      if (isClosed) {
+        if (target.closest('[data-no-book-open]')) {
+          return;
+        }
+      }
+
+      // If returning, immediately interrupt return animation and give user instant control
+      if (isReturningRef.current || returnAnimRef.current !== null) {
+        if (returnAnimRef.current !== null) {
+          cancelAnimationFrame(returnAnimRef.current);
+          returnAnimRef.current = null;
+        }
+        isReturningRef.current = false;
+        setIsReturning(false);
+      }
+
+      dragStateRef.current = {
+        isTracking: true,
+        isDragging: false,
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        startRotX: currentRotRef.current.x,
+        startRotY: currentRotRef.current.y,
+        targetEl: target,
+      };
+    },
+    [isClosed, isOpening, isClosing, isFlippingCover, turningLeafIndex]
+  );
+
+  useEffect(() => {
+    const onPointerMove = (e: PointerEvent) => {
+      const state = dragStateRef.current;
+      if (!state.isTracking) return;
+
+      const dx = e.clientX - state.startX;
+      const dy = e.clientY - state.startY;
+      const dist = Math.hypot(dx, dy);
+
+      if (!state.isDragging) {
+        if (dist > 4) {
+          state.isDragging = true;
+          hasDraggedRef.current = true;
+          setIsActiveDragging(true);
+        }
+      }
+
+      if (state.isDragging) {
+        if (e.cancelable) e.preventDefault();
+
+        // 0.45 deg per pixel sensitivity: natural, smooth, responsive
+        const sensitivity = 0.45;
+        const newY = state.startRotY + dx * sensitivity;
+        const newX = Math.max(-85, Math.min(85, state.startRotX - dy * sensitivity));
+
+        currentRotRef.current = { x: newX, y: newY };
+        setRotOffset({ x: newX, y: newY });
+      }
+    };
+
+    const onPointerUp = () => {
+      const state = dragStateRef.current;
+      if (!state.isTracking) return;
+
+      const wasDragging = state.isDragging;
+      const targetEl = state.targetEl;
+
+      state.isTracking = false;
+      state.isDragging = false;
+      setIsActiveDragging(false);
+
+      if (wasDragging) {
+        setTimeout(() => {
+          hasDraggedRef.current = false;
+        }, 80);
+        startReturnAnimation();
+      } else {
+        hasDraggedRef.current = false;
+        if (isClosed) {
+          if (
+            targetEl?.closest('[data-closed-book]') ||
+            targetEl?.closest('[data-open-book-trigger]')
+          ) {
+            openBook();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [isClosed, openBook, startReturnAnimation]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (dragStateRef.current.isDragging) return;
       if (
         document.activeElement instanceof HTMLInputElement ||
         document.activeElement instanceof HTMLTextAreaElement
@@ -907,19 +1144,22 @@ export default function App() {
 
   {/* Authentic Physical 3D Hardcover Book (Single Portrait Volume when closed) */}
   const renderClosedBook3D = () => {
+    const isInteracting = isActiveDragging || isReturning;
     const rotY =
       closedBy === 'back'
-        ? 180 + (isBookHovered ? -mouseTilt.x * 20 : 0)
-        : isBookHovered
+        ? 180 + (isBookHovered && !isInteracting ? -mouseTilt.x * 20 : 0)
+        : isBookHovered && !isInteracting
         ? -16 + mouseTilt.x * 20
         : -16;
-    const rotX = isBookHovered ? 8 - mouseTilt.y * 16 : 8;
-    const transZ = isBookHovered ? 24 : 0;
-    const transY = isBookHovered ? -12 : 0;
+    const rotX = isBookHovered && !isInteracting ? 8 - mouseTilt.y * 16 : 8;
+    const transZ = isBookHovered && !isInteracting ? 24 : 0;
+    const transY = isBookHovered && !isInteracting ? -12 : 0;
 
     return (
       <div
+        data-closed-book="true"
         onClick={(e) => {
+          if (hasDraggedRef.current) return;
           const target = e.target as HTMLElement | null;
           if (
             target?.closest('[data-no-book-open]') ||
@@ -933,14 +1173,15 @@ export default function App() {
         }}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
-        className={`relative cursor-pointer ${
-          !isBookHovered && !isFlippingCover ? 'animate-book-float' : ''
+        className={`relative ${
+          !isBookHovered && !isFlippingCover && !isInteracting ? 'animate-book-float' : ''
         }`}
         style={{
           perspective: '2600px',
           transformStyle: 'preserve-3d',
           width: 'min(420px, 85vw, calc((100dvh - 180px) / 1.38))',
           aspectRatio: '1 / 1.38',
+          cursor: isActiveDragging ? 'grabbing' : 'grab',
         }}
       >
         {/* Soft Ambient Contact Drop Shadow underneath the closed book */}
@@ -955,143 +1196,173 @@ export default function App() {
           }}
         />
 
-        {/* The 3D Physical Book Volume with all 6 faces */}
+        {/* 3D ROTATION WRAPPER FOR FREE 360 ROTATION */}
         <div
           className="relative w-full h-full"
           style={{
             transformStyle: 'preserve-3d',
-            transform: `rotateY(${rotY}deg) rotateX(${rotX}deg) translateY(${transY}px) translateZ(${transZ}px)`,
-            transition: isFlippingCover
-              ? 'transform 850ms cubic-bezier(0.34, 1.25, 0.64, 1)'
-              : isBookHovered
-              ? 'transform 250ms ease-out'
-              : 'transform 650ms ease-out',
+            transform: `rotateX(${rotOffset.x}deg) rotateY(${rotOffset.y}deg)`,
+            transformOrigin: '50% 50%',
+            willChange: isInteracting ? 'transform' : 'auto',
           }}
         >
-          {/* ================= FRONT COVER (Top Face) ================= */}
+          {/* The 3D Physical Book Volume with all 6 faces */}
           <div
-            className="absolute inset-0 rounded-[4px] overflow-hidden"
+            className="relative w-full h-full"
             style={{
-              transform: 'translateZ(18px)',
-              backfaceVisibility: 'hidden',
-              WebkitBackfaceVisibility: 'hidden',
-              boxShadow: '0 12px 36px rgba(196,85,102,0.22), 0 2px 10px rgba(0,0,0,0.06)',
+              transformStyle: 'preserve-3d',
+              transform: `rotateY(${rotY}deg) rotateX(${rotX}deg) translateY(${transY}px) translateZ(${transZ}px)`,
+              transition: isFlippingCover
+                ? 'transform 850ms cubic-bezier(0.34, 1.25, 0.64, 1)'
+                : isBookHovered && !isInteracting
+                ? 'transform 250ms ease-out'
+                : 'transform 650ms ease-out',
             }}
           >
-            {renderFrontCoverContent()}
-          </div>
-
-          {/* ================= BACK COVER (Bottom Face) ================= */}
-          <div
-            className="absolute inset-0 rounded-[4px] overflow-hidden"
-            style={{
-              transform: 'translateZ(-18px) rotateY(180deg)',
-              backfaceVisibility: 'hidden',
-              WebkitBackfaceVisibility: 'hidden',
-              boxShadow: '0 12px 36px rgba(196,85,102,0.22), 0 2px 10px rgba(0,0,0,0.06)',
-            }}
-          >
-            {renderBackCoverContent()}
-          </div>
-
-          {/* ================= 3D SPINE (Left Edge) ================= */}
-          <div
-            className="absolute top-0 bottom-0 left-0 w-[36px] pointer-events-none rounded-l-[3px] flex flex-col justify-between py-6 items-center overflow-hidden"
-            style={{
-              transformOrigin: 'left center',
-              transform: 'rotateY(-90deg) translateZ(0px)',
-              background: 'linear-gradient(90deg, #FAD4DC 0%, #F5B3BE 35%, #EE9BA8 65%, #FAD4DC 100%)',
-              boxShadow: 'inset 0 0 10px rgba(196,85,102,0.35)',
-            }}
-          >
-            {/* Top gold rib band */}
-            <div className="w-full flex flex-col gap-1 px-0.5">
-              <div className="w-full h-1 bg-gradient-to-r from-[#C99A6E] via-[#F5D678] to-[#C99A6E] shadow-xs" />
-              <div className="w-full h-0.5 bg-[#C99A6E]/70" />
+            {/* ================= FRONT COVER (Top Face) ================= */}
+            <div
+              className="absolute inset-0 rounded-[4px] overflow-hidden"
+              style={{
+                transform: 'translateZ(19px)',
+                backfaceVisibility: 'hidden',
+                WebkitBackfaceVisibility: 'hidden',
+                boxShadow: '0 14px 40px rgba(196,85,102,0.24), 0 2px 10px rgba(0,0,0,0.06)',
+              }}
+            >
+              {renderFrontCoverContent()}
             </div>
 
-            {/* Vertical Spine Title in gold foil */}
-            <div className="my-auto transform rotate-90 whitespace-nowrap flex items-center gap-2">
-              <span className="font-['Cinzel'] text-[10px] tracking-[4px] text-[#8C3042] font-bold uppercase drop-shadow-xs">
-                ✦ WEDDING ANNIVERSARY ✦
-              </span>
+            {/* ================= BACK COVER (Bottom Face) ================= */}
+            <div
+              className="absolute inset-0 rounded-[4px] overflow-hidden"
+              style={{
+                transform: 'translateZ(-19px) rotateY(180deg)',
+                backfaceVisibility: 'hidden',
+                WebkitBackfaceVisibility: 'hidden',
+                boxShadow: '0 14px 40px rgba(196,85,102,0.24), 0 2px 10px rgba(0,0,0,0.06)',
+              }}
+            >
+              {renderBackCoverContent()}
             </div>
 
-            {/* Bottom gold rib band */}
-            <div className="w-full flex flex-col gap-1 px-0.5">
-              <div className="w-full h-0.5 bg-[#C99A6E]/70" />
-              <div className="w-full h-1 bg-gradient-to-r from-[#C99A6E] via-[#F5D678] to-[#C99A6E] shadow-xs" />
+            {/* ================= 3D SPINE (Left Edge) ================= */}
+            <div
+              className="absolute top-0 bottom-0 pointer-events-none rounded-l-[3px] flex flex-col justify-between py-6 items-center overflow-hidden"
+              style={{
+                left: '-19px',
+                width: '38px',
+                transformOrigin: 'center center',
+                transform: 'rotateY(-90deg)',
+                background: 'linear-gradient(90deg, #FAD4DC 0%, #F5B3BE 35%, #EE9BA8 65%, #FAD4DC 100%)',
+                boxShadow: 'inset 0 0 10px rgba(196,85,102,0.35)',
+              }}
+            >
+              {/* Top Headband fabric cord */}
+              <div className="w-full h-1.5 bg-[repeating-linear-gradient(90deg,#8C3042_0px,#8C3042_2px,#F5D678_2px,#F5D678_4px)] shadow-xs opacity-90" />
+
+              {/* Top gold rib band */}
+              <div className="w-full flex flex-col gap-1 px-0.5">
+                <div className="w-full h-1 bg-gradient-to-r from-[#C99A6E] via-[#F5D678] to-[#C99A6E] shadow-xs" />
+                <div className="w-full h-0.5 bg-[#C99A6E]/70" />
+              </div>
+
+              {/* Vertical Spine Title in gold foil */}
+              <div className="my-auto transform rotate-90 whitespace-nowrap flex items-center gap-2">
+                <span className="font-['Cinzel'] text-[10px] tracking-[4px] text-[#8C3042] font-bold uppercase drop-shadow-xs">
+                  ✦ WEDDING ANNIVERSARY ✦
+                </span>
+              </div>
+
+              {/* Bottom gold rib band */}
+              <div className="w-full flex flex-col gap-1 px-0.5">
+                <div className="w-full h-0.5 bg-[#C99A6E]/70" />
+                <div className="w-full h-1 bg-gradient-to-r from-[#C99A6E] via-[#F5D678] to-[#C99A6E] shadow-xs" />
+              </div>
+
+              {/* Bottom Tailband fabric cord */}
+              <div className="w-full h-1.5 bg-[repeating-linear-gradient(90deg,#8C3042_0px,#8C3042_2px,#F5D678_2px,#F5D678_4px)] shadow-xs opacity-90" />
             </div>
+
+            {/* ================= 3D FORE-EDGE (Right Open Paper Block) ================= */}
+            <div
+              className="absolute top-[4px] bottom-[4px] pointer-events-none rounded-r-[2px] overflow-hidden"
+              style={{
+                right: '-14px',
+                width: '34px',
+                transformOrigin: 'center center',
+                transform: 'rotateY(90deg)',
+                background: `repeating-linear-gradient(
+                  to bottom,
+                  #FFFFFF 0px,
+                  #FFF8F9 1.5px,
+                  #F8E6E9 2.5px,
+                  #FFFFFF 4px
+                )`,
+                boxShadow: 'inset 3px 0 8px rgba(196,85,102,0.18), inset -3px 0 6px rgba(201,154,110,0.25)',
+              }}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-[#C99A6E]/20 via-transparent to-[#C99A6E]/20" />
+            </div>
+
+            {/* ================= 3D HEAD (Top Paper Block) ================= */}
+            <div
+              className="absolute left-[6px] right-[6px] pointer-events-none rounded-t-[2px] overflow-hidden"
+              style={{
+                top: '-14px',
+                height: '34px',
+                transformOrigin: 'center center',
+                transform: 'rotateX(90deg)',
+                background: `repeating-linear-gradient(
+                  to right,
+                  #FFFFFF 0px,
+                  #FFF8F9 1.5px,
+                  #F8E6E9 2.5px,
+                  #FFFFFF 4px
+                )`,
+                boxShadow: 'inset 0 3px 8px rgba(196,85,102,0.18)',
+              }}
+            />
+
+            {/* ================= 3D TAIL (Bottom Paper Block) ================= */}
+            <div
+              className="absolute left-[6px] right-[6px] pointer-events-none rounded-b-[2px] overflow-hidden"
+              style={{
+                bottom: '-14px',
+                height: '34px',
+                transformOrigin: 'center center',
+                transform: 'rotateX(-90deg)',
+                background: `repeating-linear-gradient(
+                  to right,
+                  #FFFFFF 0px,
+                  #FFF8F9 1.5px,
+                  #F8E6E9 2.5px,
+                  #FFFFFF 4px
+                )`,
+                boxShadow: 'inset 0 -3px 8px rgba(196,85,102,0.18)',
+              }}
+            />
+
+            {/* Silk Ribbon Bookmark */}
+            <div
+              className="absolute -bottom-8 left-[70%] w-4 h-12 bg-gradient-to-b from-[#E68A98] to-[#C45566] border-x border-[#C99A6E]/50 shadow-md pointer-events-none"
+              style={{
+                transform: 'translateZ(6px) rotate(4deg)',
+                clipPath: 'polygon(0 0, 100% 0, 100% 100%, 50% 85%, 0 100%)',
+              }}
+            />
           </div>
-
-          {/* ================= 3D FORE-EDGE (Right Open Paper Block) ================= */}
-          <div
-            className="absolute top-[4px] bottom-[4px] right-0 w-[34px] pointer-events-none rounded-r-[2px] overflow-hidden"
-            style={{
-              transformOrigin: 'right center',
-              transform: 'rotateY(90deg) translateZ(0px)',
-              background: `repeating-linear-gradient(
-                to bottom,
-                #FFFFFF 0px,
-                #FFF8F9 1.5px,
-                #F8E6E9 2.5px,
-                #FFFFFF 4px
-              )`,
-              boxShadow: 'inset 3px 0 8px rgba(196,85,102,0.18), inset -3px 0 6px rgba(201,154,110,0.25)',
-            }}
-          >
-            <div className="absolute inset-0 bg-gradient-to-r from-[#C99A6E]/20 via-transparent to-[#C99A6E]/20" />
-          </div>
-
-          {/* ================= 3D HEAD (Top Paper Block) ================= */}
-          <div
-            className="absolute top-0 left-[6px] right-[6px] h-[34px] pointer-events-none rounded-t-[2px] overflow-hidden"
-            style={{
-              transformOrigin: 'top center',
-              transform: 'rotateX(90deg) translateZ(0px)',
-              background: `repeating-linear-gradient(
-                to right,
-                #FFFFFF 0px,
-                #FFF8F9 1.5px,
-                #F8E6E9 2.5px,
-                #FFFFFF 4px
-              )`,
-              boxShadow: 'inset 0 3px 8px rgba(196,85,102,0.18)',
-            }}
-          />
-
-          {/* ================= 3D TAIL (Bottom Paper Block) ================= */}
-          <div
-            className="absolute bottom-0 left-[6px] right-[6px] h-[34px] pointer-events-none rounded-b-[2px] overflow-hidden"
-            style={{
-              transformOrigin: 'bottom center',
-              transform: 'rotateX(-90deg) translateZ(0px)',
-              background: `repeating-linear-gradient(
-                to right,
-                #FFFFFF 0px,
-                #FFF8F9 1.5px,
-                #F8E6E9 2.5px,
-                #FFFFFF 4px
-              )`,
-              boxShadow: 'inset 0 -3px 8px rgba(196,85,102,0.18)',
-            }}
-          />
-
-          {/* Silk Ribbon Bookmark */}
-          <div
-            className="absolute -bottom-8 left-[70%] w-4 h-12 bg-gradient-to-b from-[#E68A98] to-[#C45566] border-x border-[#C99A6E]/50 shadow-md pointer-events-none"
-            style={{
-              transform: 'translateZ(6px) rotate(4deg)',
-              clipPath: 'polygon(0 0, 100% 0, 100% 100%, 50% 85%, 0 100%)',
-            }}
-          />
         </div>
       </div>
     );
   };
 
   return (
-    <div className="relative h-screen h-[100dvh] w-full flex flex-col items-center justify-between p-2 sm:p-3 overflow-hidden select-none bg-[radial-gradient(ellipse_at_50%_25%,#FFF7F8_0%,#FAEEF1_50%,#F5DFE4_100%)] text-[#2D2628]">
+    <div
+      onPointerDown={handlePointerDown}
+      className={`relative h-screen h-[100dvh] w-full flex flex-col items-center justify-between p-2 sm:p-3 overflow-hidden select-none bg-[radial-gradient(ellipse_at_50%_25%,#FFF7F8_0%,#FAEEF1_50%,#F5DFE4_100%)] text-[#2D2628] ${
+        isActiveDragging ? 'cursor-grabbing select-none' : ''
+      }`}
+    >
       {/* Background Ambience */}
       <Particles />
       <Petals enabled={petalsEnabled} />
@@ -1186,8 +1457,10 @@ export default function App() {
         ref={bookContainerRef}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
-        className="relative z-20 w-full max-w-5xl flex-1 min-h-0 flex flex-col items-center justify-center my-auto py-1"
-        style={{ perspective: '2600px' }}
+        className={`relative z-20 w-full max-w-5xl flex-1 min-h-0 flex flex-col items-center justify-center my-auto py-1 ${
+          isActiveDragging ? 'cursor-grabbing' : 'cursor-grab'
+        }`}
+        style={{ perspective: '2600px', touchAction: 'none' }}
       >
         {/* ================= 3D PHYSICAL BOOK STAGE ================= */}
         {isClosed && !isClosing ? (
@@ -1195,7 +1468,11 @@ export default function App() {
             {renderClosedBook3D()}
             {/* Prompt when Book is Closed */}
             <div
-              onClick={openBook}
+              data-open-book-trigger="true"
+              onClick={() => {
+                if (hasDraggedRef.current) return;
+                openBook();
+              }}
               className="flex items-center gap-2 text-xs font-['Cinzel'] text-rose-800 tracking-[3px] uppercase mt-3 sm:mt-4 cursor-pointer hover:text-rose-950 transition-colors shrink-0"
             >
               <span className="w-10 h-[1px] bg-rose-300" />
@@ -1206,52 +1483,152 @@ export default function App() {
         ) : (
           /* ================= 3D OPEN BOOK SPREAD ASSEMBLY ================= */
           <div
-            className="relative aspect-[1.38/1]"
+            data-book-spread="true"
+            className="relative aspect-[1.38/1] cursor-default"
             style={{
               transformStyle: 'preserve-3d',
               width: 'min(880px, 94vw, calc((100dvh - 165px) * 1.38))',
               maxWidth: '100%',
             }}
           >
-            {/* Main 3D Book Body with realistic opening/closing slide & tilt */}
+            {/* 3D Viewing Rotation Wrapper */}
             <div
               className="w-full h-full"
               style={{
                 transformStyle: 'preserve-3d',
-                transition: 'transform 900ms cubic-bezier(0.25, 1, 0.5, 1)',
-                transform: isClosing
-                  ? 'scale(0.88) rotateX(6deg) translateY(12px)'
-                  : 'scale(1.0) rotateX(0deg) translateY(0)',
+                transform: `rotateX(${rotOffset.x}deg) rotateY(${rotOffset.y}deg)`,
+                transformOrigin: '50% 50%',
+                willChange: isActiveDragging || isReturning ? 'transform' : 'auto',
               }}
             >
-              {/* Ambient Contact Shadow beneath the book */}
+              {/* Main 3D Book Body with realistic opening/closing slide & tilt */}
               <div
-                className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-[92%] h-14 bg-rose-950/20 rounded-full blur-2xl pointer-events-none"
-                style={{
-                  transition: 'opacity 900ms ease',
-                  opacity: 0.6,
-                }}
-              />
-
-              {/* ================= BOOK SPREAD ASSEMBLY ================= */}
-              <div
-                className="relative w-full h-full rounded-lg transition-shadow duration-700"
+                className="w-full h-full"
                 style={{
                   transformStyle: 'preserve-3d',
-                  boxShadow: '0 25px 50px rgba(196,85,102,0.18)',
+                  transition: 'transform 900ms cubic-bezier(0.25, 1, 0.5, 1)',
+                  transform: isClosing
+                    ? 'scale(0.88) rotateX(6deg) translateY(12px)'
+                    : 'scale(1.0) rotateX(0deg) translateY(0)',
                 }}
               >
+                {/* Ambient Contact Shadow beneath the book */}
+                <div
+                  className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-[92%] h-14 bg-rose-950/20 rounded-full blur-2xl pointer-events-none"
+                  style={{
+                    transition: 'opacity 900ms ease',
+                    opacity: 0.6,
+                  }}
+                />
+
+                {/* ================= BOOK SPREAD ASSEMBLY ================= */}
+                <div
+                  className="relative w-full h-full rounded-lg transition-shadow duration-700"
+                  style={{
+                    transformStyle: 'preserve-3d',
+                    boxShadow: '0 25px 50px rgba(196,85,102,0.18)',
+                  }}
+                >
                 {/* Hardcover Base Underneath Right Half (Back cover board) */}
                 <div
                   className="absolute top-0 right-0 w-1/2 h-full rounded-r-[6px] border-2 border-[#C99A6E]/80 pointer-events-none overflow-hidden"
                   style={{
-                    transform: 'translateZ(-16px)',
+                    transform: 'translateZ(-16px) rotateY(180deg)',
+                    backfaceVisibility: 'hidden',
                   }}
                 >
                   {renderBackCoverContent()}
                 </div>
 
-                {/* Center Spine Crease */}
+                {/* Center Leather Spine Underneath Hinge */}
+                <div
+                  className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-8 sm:w-10 rounded-full pointer-events-none z-0 overflow-hidden flex flex-col justify-between py-6 items-center"
+                  style={{
+                    transform: 'translateZ(-18px) rotateY(180deg)',
+                    background: 'linear-gradient(90deg, #FAD4DC 0%, #F5B3BE 35%, #EE9BA8 65%, #FAD4DC 100%)',
+                    boxShadow: '0 4px 16px rgba(140,48,66,0.3)',
+                    borderLeft: '1px solid #C99A6E',
+                    borderRight: '1px solid #C99A6E',
+                  }}
+                >
+                  <div className="w-full h-1 bg-[#C99A6E]" />
+                  <div className="my-auto transform rotate-90 whitespace-nowrap">
+                    <span className="font-['Cinzel'] text-[9px] tracking-[3px] text-[#8C3042] font-bold uppercase">
+                      ✦ WEDDING ANNIVERSARY ✦
+                    </span>
+                  </div>
+                  <div className="w-full h-1 bg-[#C99A6E]" />
+                </div>
+
+                {/* Right Fore-Edge Paper Block (Thickness of remaining pages) */}
+                <div
+                  className="absolute top-1 bottom-1 right-0 w-[16px] pointer-events-none overflow-hidden"
+                  style={{
+                    transformOrigin: 'right center',
+                    transform: 'translateX(8px) rotateY(90deg)',
+                    background: `repeating-linear-gradient(
+                      to bottom,
+                      #FFFFFF 0px,
+                      #FFF8F9 1.5px,
+                      #F8E6E9 2.5px,
+                      #FFFFFF 4px
+                    )`,
+                    boxShadow: 'inset 2px 0 6px rgba(196,85,102,0.18)',
+                  }}
+                />
+
+                {/* Left Fore-Edge Paper Block (Thickness of turned pages) */}
+                <div
+                  className="absolute top-1 bottom-1 left-0 w-[16px] pointer-events-none overflow-hidden"
+                  style={{
+                    transformOrigin: 'left center',
+                    transform: 'translateX(-8px) rotateY(-90deg)',
+                    background: `repeating-linear-gradient(
+                      to bottom,
+                      #FFFFFF 0px,
+                      #FFF8F9 1.5px,
+                      #F8E6E9 2.5px,
+                      #FFFFFF 4px
+                    )`,
+                    boxShadow: 'inset -2px 0 6px rgba(196,85,102,0.18)',
+                  }}
+                />
+
+                {/* Top Head Paper Block */}
+                <div
+                  className="absolute top-0 left-2 right-2 h-[16px] pointer-events-none overflow-hidden"
+                  style={{
+                    transformOrigin: 'top center',
+                    transform: 'translateY(-8px) rotateX(90deg)',
+                    background: `repeating-linear-gradient(
+                      to right,
+                      #FFFFFF 0px,
+                      #FFF8F9 1.5px,
+                      #F8E6E9 2.5px,
+                      #FFFFFF 4px
+                    )`,
+                    boxShadow: 'inset 0 2px 6px rgba(196,85,102,0.18)',
+                  }}
+                />
+
+                {/* Bottom Tail Paper Block */}
+                <div
+                  className="absolute bottom-0 left-2 right-2 h-[16px] pointer-events-none overflow-hidden"
+                  style={{
+                    transformOrigin: 'bottom center',
+                    transform: 'translateY(8px) rotateX(-90deg)',
+                    background: `repeating-linear-gradient(
+                      to right,
+                      #FFFFFF 0px,
+                      #FFF8F9 1.5px,
+                      #F8E6E9 2.5px,
+                      #FFFFFF 4px
+                    )`,
+                    boxShadow: 'inset 0 -2px 6px rgba(196,85,102,0.18)',
+                  }}
+                />
+
+                {/* Center Spine Crease on Top */}
                 <div
                   className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-6 sm:w-8 pointer-events-none z-60 flex flex-col items-center justify-between py-4"
                   style={{
@@ -1269,7 +1646,13 @@ export default function App() {
 
                 {/* ================= LEAF 0: THE PHYSICAL HARDCOVER FRONT (SWINGS IN 3D TO OPEN/CLOSE) ================= */}
                 <div
-                  className="absolute top-0 right-0 w-1/2 h-full"
+                  className={`absolute top-0 right-0 w-1/2 h-full ${
+                    !isClosed && !isClosing && flippedLeaves === 1
+                      ? 'pointer-events-auto'
+                      : isClosed
+                      ? 'pointer-events-auto'
+                      : 'pointer-events-none'
+                  }`}
                   style={{
                     transformOrigin: 'left center',
                     transformStyle: 'preserve-3d',
@@ -1296,9 +1679,13 @@ export default function App() {
 
                   {/* Back Face of Leaf 0: INSIDE FRONT COVER (Faces user on left half when open!) */}
                   <div
-                    className="absolute inset-0 overflow-hidden"
+                    className={`absolute inset-0 overflow-hidden cursor-default ${
+                      !isClosed && !isClosing && flippedLeaves === 1
+                        ? 'pointer-events-auto'
+                        : 'pointer-events-none'
+                    }`}
                     style={{
-                      transform: 'rotateY(180deg)',
+                      transform: 'rotateY(180deg) translateZ(1px)',
                       backfaceVisibility: 'hidden',
                       WebkitBackfaceVisibility: 'hidden',
                     }}
@@ -1316,6 +1703,10 @@ export default function App() {
                   const isLeafFlipped = flippedLeaves > leafIdx;
                   const isTurning = turningLeafIndex === leafIdx;
 
+                  // Active visible pages hit testing only - prevents z-fighting and hidden pages absorbing clicks
+                  const isVisibleRight = !isClosed && !isClosing && flippedLeaves === leafIdx && !isTurning;
+                  const isVisibleLeft = !isClosed && !isClosing && flippedLeaves - 1 === leafIdx && !isTurning;
+
                   const zIndex = isTurning
                     ? 99
                     : isLeafFlipped
@@ -1325,7 +1716,9 @@ export default function App() {
                   return (
                     <div
                       key={leafIdx}
-                      className="absolute top-0 right-0 w-1/2 h-full pointer-events-none"
+                      className={`absolute top-0 right-0 w-1/2 h-full ${
+                        isVisibleRight || isVisibleLeft ? 'pointer-events-auto' : 'pointer-events-none'
+                      }`}
                       style={{
                         transformOrigin: 'left center',
                         transformStyle: 'preserve-3d',
@@ -1338,9 +1731,11 @@ export default function App() {
                     >
                       {/* Front Face: Odd Page (Right side) */}
                       <div
-                        className="absolute inset-0 overflow-hidden pointer-events-auto"
+                        className={`absolute inset-0 overflow-hidden cursor-default ${
+                          isVisibleRight ? 'pointer-events-auto' : 'pointer-events-none'
+                        }`}
                         style={{
-                          transform: 'rotateY(0deg)',
+                          transform: 'rotateY(0deg) translateZ(1px)',
                           backfaceVisibility: 'hidden',
                           WebkitBackfaceVisibility: 'hidden',
                         }}
@@ -1357,11 +1752,15 @@ export default function App() {
                         />
 
                         {/* Corner Turn Button */}
-                        {!isClosed && !isClosing && (
+                        {!isClosed && !isClosing && isVisibleRight && (
                           <button
+                            type="button"
+                            data-no-book-rotate="true"
+                            onPointerDown={(e) => e.stopPropagation()}
                             onClick={flipForward}
                             title="Next Page"
-                            className="absolute bottom-3 right-3 w-8 h-8 z-30 group cursor-pointer flex items-center justify-center rounded-full bg-white/90 hover:bg-rose-50 border border-rose-200 text-rose-700 shadow-sm transition-all hover:scale-110"
+                            className="absolute bottom-3 right-3 w-8 h-8 z-50 group cursor-pointer flex items-center justify-center rounded-full bg-white/90 hover:bg-rose-50 border border-rose-200 text-rose-700 shadow-sm transition-all hover:scale-110 active:scale-95"
+                            style={{ transform: 'translateZ(10px)' }}
                           >
                             <ChevronRight className="w-4 h-4 text-rose-600" />
                           </button>
@@ -1370,9 +1769,11 @@ export default function App() {
 
                       {/* Back Face: Even Page (Left side) */}
                       <div
-                        className="absolute inset-0 overflow-hidden pointer-events-auto"
+                        className={`absolute inset-0 overflow-hidden cursor-default ${
+                          isVisibleLeft ? 'pointer-events-auto' : 'pointer-events-none'
+                        }`}
                         style={{
-                          transform: 'rotateY(180deg)',
+                          transform: 'rotateY(180deg) translateZ(1px)',
                           backfaceVisibility: 'hidden',
                           WebkitBackfaceVisibility: 'hidden',
                         }}
@@ -1389,11 +1790,15 @@ export default function App() {
                         />
 
                         {/* Corner Turn Button */}
-                        {!isClosed && !isClosing && (
+                        {!isClosed && !isClosing && isVisibleLeft && (
                           <button
+                            type="button"
+                            data-no-book-rotate="true"
+                            onPointerDown={(e) => e.stopPropagation()}
                             onClick={flipBack}
                             title="Previous Page"
-                            className="absolute bottom-3 left-3 w-8 h-8 z-30 group cursor-pointer flex items-center justify-center rounded-full bg-white/90 hover:bg-rose-50 border border-rose-200 text-rose-700 shadow-sm transition-all hover:scale-110"
+                            className="absolute bottom-3 left-3 w-8 h-8 z-50 group cursor-pointer flex items-center justify-center rounded-full bg-white/90 hover:bg-rose-50 border border-rose-200 text-rose-700 shadow-sm transition-all hover:scale-110 active:scale-95"
+                            style={{ transform: 'translateZ(10px)' }}
                           >
                             <ChevronLeft className="w-4 h-4 text-rose-600" />
                           </button>
@@ -1404,12 +1809,14 @@ export default function App() {
                 })}
               </div>
             </div>
+            </div>
           </div>
         )}
 
         {/* Controls Toolbar when Book is Open */}
         {!isClosed && !isClosing && (
           <div
+            data-controls-toolbar="true"
             className="w-full shrink-0"
             style={{
               width: 'min(880px, 94vw, calc((100dvh - 165px) * 1.38))',
